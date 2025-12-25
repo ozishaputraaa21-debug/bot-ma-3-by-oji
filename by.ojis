@@ -1,0 +1,95 @@
+from binance.client import Client
+import pandas as pd
+import time
+import os
+from dotenv import load_dotenv
+from config import *
+
+load_dotenv()
+
+client = Client(
+    os.getenv("API_KEY"),
+    os.getenv("API_SECRET")
+)
+
+client.futures_change_leverage(symbol=SYMBOL, leverage=LEVERAGE)
+
+highest_price = 0
+
+def get_klines():
+    klines = client.futures_klines(
+        symbol=SYMBOL,
+        interval=INTERVAL,
+        limit=10
+    )
+    df = pd.DataFrame(klines, columns=[
+        "time","open","high","low","close","volume",
+        "ct","qav","n","tbb","tbq","ignore"
+    ])
+    df["close"] = df["close"].astype(float)
+    return df
+
+def has_position():
+    pos = client.futures_position_information(symbol=SYMBOL)
+    for p in pos:
+        if float(p["positionAmt"]) != 0:
+            return True
+    return False
+
+def buy():
+    client.futures_create_order(
+        symbol=SYMBOL,
+        side="BUY",
+        type="MARKET",
+        quantity=QTY
+    )
+
+def close_position():
+    client.futures_create_order(
+        symbol=SYMBOL,
+        side="SELL",
+        type="MARKET",
+        quantity=QTY,
+        reduceOnly=True
+    )
+
+def ma3_bullish(df):
+    df["ma3"] = df["close"].rolling(MA_PERIOD).mean()
+    return (
+        df["close"].iloc[-1] > df["ma3"].iloc[-1] and
+        df["ma3"].iloc[-1] > df["ma3"].iloc[-2]
+    )
+
+while True:
+    try:
+        df = get_klines()
+        price = float(client.futures_mark_price(symbol=SYMBOL)["markPrice"])
+
+        global highest_price
+
+        # ENTRY
+        if not has_position():
+            if ma3_bullish(df):
+                buy()
+                highest_price = price
+                print(f"BUY @ {price}")
+
+        # TRAILING STOP
+        else:
+            if price > highest_price:
+                highest_price = price
+
+            trailing_sl = highest_price * (1 - TRAILING_SL_PERCENT)
+
+            print(f"Price: {price} | SL: {trailing_sl}")
+
+            if price <= trailing_sl:
+                close_position()
+                highest_price = 0
+                print(f"CLOSE by Trailing SL @ {price}")
+
+        time.sleep(10)
+
+    except Exception as e:
+        print("ERROR:", e)
+        time.sleep(5)
